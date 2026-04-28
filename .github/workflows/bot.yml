@@ -2,8 +2,8 @@ name: Run Hybrid Alpaca Bot
 
 on:
   schedule:
-    - cron: "35 13 * * 1-5"   # 9:35 AM New York (EDT)
-    - cron: "0 */4 * * *"     # every 4 hours (crypto 24/7)
+    - cron: "35 13 * * 1-5"   # Weekdays at 9:35 AM New York during EDT
+    - cron: "0 */4 * * *"     # Every 4 hours for crypto checks
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot
+      - name: Run Alpaca bot
         env:
           API_KEY: ${{ secrets.API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
