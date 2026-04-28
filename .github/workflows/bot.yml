@@ -1,25 +1,8 @@
-name: Run Alpaca Bot
+import os
+import alpaca_trade_api as tradeapi
 
-on:
-  workflow_dispatch:
+API_KEY = os.getenv("APCA_API_KEY_ID")
+SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+BASE_URL = "https://api.alpaca.markets"
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install alpaca-trade-api
-
-      - name: Run bot
-        env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-        run: python bot.py
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
