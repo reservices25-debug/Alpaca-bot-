@@ -4,19 +4,19 @@ import alpaca_trade_api as tradeapi
 API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-BASE_URL = "https://paper-api.alpaca.markets"  # paper testing first
-# BASE_URL = "https://api.alpaca.markets"      # live later
+# LIVE trading account
+BASE_URL = "https://api.alpaca.markets"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
 targets = {
-    "SGOV": 0.25,      # safety
-    "VTI": 0.25,       # growth
-    "SCHD": 0.20,      # dividend growth
-    "JEPI": 0.15,      # income
-    "O": 0.10,         # REIT income
-    "BTC/USD": 0.025,  # crypto growth
-    "ETH/USD": 0.025   # crypto growth
+    "SGOV": 0.20,
+    "VTI": 0.20,
+    "SCHD": 0.20,
+    "JEPI": 0.20,
+    "O": 0.15,
+    "BTC/USD": 0.025,
+    "ETH/USD": 0.025
 }
 
 crypto_assets = ["BTC/USD", "ETH/USD"]
@@ -25,6 +25,9 @@ cash_reserve_pct = 0.10
 min_order_size = 1.00
 max_single_asset_pct = 0.30
 max_crypto_total_pct = 0.05
+
+profit_take_threshold = 0.05
+profit_take_sell_pct = 0.25
 
 
 def get_portfolio():
@@ -40,10 +43,9 @@ def get_portfolio():
 
     account = api.get_account()
     cash = float(account.cash)
-
     total_value = total_positions_value + cash
 
-    return portfolio, total_value, cash
+    return portfolio, total_value, cash, positions
 
 
 def get_current_allocation(portfolio, total_value, symbol):
@@ -55,7 +57,6 @@ def get_current_allocation(portfolio, total_value, symbol):
 def get_crypto_allocation(portfolio, total_value):
     if total_value <= 0:
         return 0
-
     crypto_value = sum(portfolio.get(asset, 0) for asset in crypto_assets)
     return crypto_value / total_value
 
@@ -75,8 +76,50 @@ def submit_buy(symbol, dollar_amount):
     )
 
 
-def run_bot():
-    portfolio, total_value, cash = get_portfolio()
+def submit_sell(symbol, qty):
+    if qty <= 0:
+        return
+
+    print(f"Selling {qty} of {symbol} to take profit")
+
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side="sell",
+        type="market",
+        time_in_force="day"
+    )
+
+
+def check_profit_take(positions):
+    for p in positions:
+        symbol = p.symbol
+
+        if symbol in crypto_assets:
+            continue
+
+        avg_entry_price = float(p.avg_entry_price)
+        current_price = float(p.current_price)
+        qty = float(p.qty)
+
+        if avg_entry_price <= 0:
+            continue
+
+        gain_pct = (current_price - avg_entry_price) / avg_entry_price
+
+        if gain_pct >= profit_take_threshold:
+            qty_to_sell = qty * profit_take_sell_pct
+
+            print(
+                f"{symbol} is up {round(gain_pct * 100, 2)}%. "
+                f"Taking profit on 25%."
+            )
+
+            submit_sell(symbol, qty_to_sell)
+
+
+def buy_underweight_assets():
+    portfolio, total_value, cash, positions = get_portfolio()
 
     required_cash_reserve = total_value * cash_reserve_pct
     investable_cash = cash - required_cash_reserve
@@ -86,7 +129,6 @@ def run_bot():
         return
 
     crypto_allocation = get_crypto_allocation(portfolio, total_value)
-
     underweight_assets = []
 
     for symbol, target_pct in targets.items():
@@ -113,6 +155,18 @@ def run_bot():
     for symbol, gap in underweight_assets:
         buy_amount = investable_cash * (gap / total_gap)
         submit_buy(symbol, buy_amount)
+
+
+def run_bot():
+    portfolio, total_value, cash, positions = get_portfolio()
+
+    print(f"Total portfolio value: ${round(total_value, 2)}")
+    print(f"Cash available: ${round(cash, 2)}")
+
+    check_profit_take(positions)
+    buy_underweight_assets()
+
+    print("Live bot run complete.")
 
 
 if __name__ == "__main__":
