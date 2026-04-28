@@ -2,8 +2,8 @@ name: Run Hybrid Alpaca Bot
 
 on:
   schedule:
-    - cron: "35 13 * * 1-5"   # weekday stock-market run, 9:35 AM NY during EDT
-    - cron: "0 */4 * * *"     # every 4 hours for crypto/hybrid checks
+    - cron: "35 13 * * 1-5"   # market open run
+    - cron: "0 */2 * * *"     # every 2 hours
   workflow_dispatch:
 
 jobs:
