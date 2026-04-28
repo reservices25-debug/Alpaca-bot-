@@ -25,7 +25,6 @@ cash_reserve_pct = 0.10
 min_order_size = 1.00
 max_single_asset_pct = 0.30
 max_crypto_total_pct = 0.05
-
 max_trades_per_run = 5
 
 profit_level_1 = 0.05
@@ -146,7 +145,7 @@ def submit_sell(symbol, qty):
     return True
 
 
-def check_profit_take_and_stop_loss(positions):
+def check_profit_take_and_stop_loss(positions, market_open):
     trades = 0
 
     for p in positions:
@@ -155,7 +154,8 @@ def check_profit_take_and_stop_loss(positions):
 
         symbol = normalize_symbol(p.symbol)
 
-        if symbol in crypto_assets:
+        # Only manage stock positions during stock market hours
+        if symbol not in crypto_assets and not market_open:
             continue
 
         avg_entry_price = float(p.avg_entry_price)
@@ -167,7 +167,6 @@ def check_profit_take_and_stop_loss(positions):
 
         gain_pct = (current_price - avg_entry_price) / avg_entry_price
 
-        # Stop-loss protection
         if gain_pct <= stop_loss_pct:
             qty_to_sell = qty * 0.50
             print(f"{symbol} down {round(gain_pct * 100, 2)}% → defensive sell 50%")
@@ -175,7 +174,6 @@ def check_profit_take_and_stop_loss(positions):
                 trades += 1
             continue
 
-        # Multi-level profit taking
         if gain_pct >= profit_level_3:
             sell_pct = 0.60
         elif gain_pct >= profit_level_2:
@@ -224,19 +222,15 @@ def buy_underweight_assets():
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
 
-        # Elite behavior
         if market_condition == "crash":
-            # In crash mode, protect capital with SGOV only
             if symbol != "SGOV":
                 continue
 
         elif market_condition == "dip":
-            # In normal dip, buy growth/dividend strength
             if symbol not in ["VTI", "SCHD", "SGOV"]:
                 continue
 
         elif market_condition == "strong":
-            # In hot market, avoid chasing VTI
             if symbol == "VTI":
                 continue
 
@@ -260,21 +254,67 @@ def buy_underweight_assets():
             trades += 1
 
 
+def buy_crypto_only():
+    portfolio, total_value, cash, positions = get_portfolio()
+
+    required_cash_reserve = total_value * cash_reserve_pct
+    investable_cash = cash - required_cash_reserve
+
+    if investable_cash < min_order_size:
+        print("Not enough investable cash for crypto-only mode.")
+        return
+
+    crypto_allocation = get_crypto_allocation(portfolio, total_value)
+
+    if crypto_allocation >= max_crypto_total_pct:
+        print("Crypto allocation already at max.")
+        return
+
+    crypto_underweight = []
+
+    for symbol in crypto_assets:
+        current_pct = get_current_allocation(portfolio, total_value, symbol)
+        target_pct = targets[symbol]
+
+        if current_pct < target_pct:
+            gap = target_pct - current_pct
+            crypto_underweight.append((symbol, gap))
+
+    if not crypto_underweight:
+        print("No underweight crypto assets.")
+        return
+
+    total_gap = sum(gap for _, gap in crypto_underweight)
+    trades = 0
+
+    for symbol, gap in crypto_underweight:
+        if trades >= max_trades_per_run:
+            break
+
+        buy_amount = investable_cash * (gap / total_gap)
+
+        if submit_buy(symbol, buy_amount):
+            trades += 1
+
+
 def run_bot():
     portfolio, total_value, cash, positions = get_portfolio()
+    market_open = is_market_open()
 
     print(f"Total portfolio value: ${round(total_value, 2)}")
     print(f"Cash available: ${round(cash, 2)}")
+    print(f"Market open: {market_open}")
 
-    # Stocks only run during market hours
-    if not is_market_open():
-        print("Stock market is closed. Bot will not place stock trades now.")
-        return
+    check_profit_take_and_stop_loss(positions, market_open)
 
-    check_profit_take_and_stop_loss(positions)
-    buy_underweight_assets()
+    if market_open:
+        print("Stock market open → full hybrid mode.")
+        buy_underweight_assets()
+    else:
+        print("Stock market closed → crypto-only mode.")
+        buy_crypto_only()
 
-    print("Elite live bot run complete.")
+    print("Hybrid live bot run complete.")
 
 
 if __name__ == "__main__":
