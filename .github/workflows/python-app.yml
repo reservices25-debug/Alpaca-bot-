@@ -1,0 +1,27 @@
+name: Run Alpaca Bot
+
+on:
+  schedule:
+    - cron: "35 14 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install alpaca-trade-api
+
+      - name: Run bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.AKDVTJLITHW7LYMQHBA5LJC4NF }}
+          ALPACA_SECRET_KEY: ${{ secrets.6WChiDsTgdGzQ82R4EfAGDFWDnUCYAVavdZ5Hp4RRdm8 }}
+        run: python bot.py
