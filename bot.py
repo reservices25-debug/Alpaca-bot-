@@ -4,8 +4,7 @@ import alpaca_trade_api as tradeapi
 API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-# LIVE trading account
-BASE_URL = "https://api.alpaca.markets"
+BASE_URL = "https://api.alpaca.markets"  # LIVE trading
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
@@ -25,9 +24,6 @@ cash_reserve_pct = 0.10
 min_order_size = 1.00
 max_single_asset_pct = 0.30
 max_crypto_total_pct = 0.05
-
-profit_take_threshold = 0.05
-profit_take_sell_pct = 0.25
 
 
 def get_portfolio():
@@ -59,6 +55,30 @@ def get_crypto_allocation(portfolio, total_value):
         return 0
     crypto_value = sum(portfolio.get(asset, 0) for asset in crypto_assets)
     return crypto_value / total_value
+
+
+def get_market_condition():
+    try:
+        bars = api.get_bars("VTI", "1Day", limit=2).df
+
+        if len(bars) < 2:
+            return "neutral"
+
+        latest = bars.iloc[-1]
+        previous = bars.iloc[-2]
+
+        change_pct = (latest["close"] - previous["close"]) / previous["close"]
+
+        if change_pct <= -0.02:
+            return "dip"
+        elif change_pct >= 0.02:
+            return "strong"
+        else:
+            return "neutral"
+
+    except Exception as e:
+        print("Market check failed:", e)
+        return "neutral"
 
 
 def submit_buy(symbol, dollar_amount):
@@ -107,15 +127,21 @@ def check_profit_take(positions):
 
         gain_pct = (current_price - avg_entry_price) / avg_entry_price
 
-        if gain_pct >= profit_take_threshold:
-            qty_to_sell = qty * profit_take_sell_pct
+        if gain_pct >= 0.10:
+            sell_pct = 0.50
+        elif gain_pct >= 0.05:
+            sell_pct = 0.25
+        else:
+            continue
 
-            print(
-                f"{symbol} is up {round(gain_pct * 100, 2)}%. "
-                f"Taking profit on 25%."
-            )
+        qty_to_sell = qty * sell_pct
 
-            submit_sell(symbol, qty_to_sell)
+        print(
+            f"{symbol} up {round(gain_pct * 100, 2)}% "
+            f"→ Selling {int(sell_pct * 100)}%"
+        )
+
+        submit_sell(symbol, qty_to_sell)
 
 
 def buy_underweight_assets():
@@ -127,6 +153,9 @@ def buy_underweight_assets():
     if investable_cash < min_order_size:
         print("Not enough investable cash.")
         return
+
+    market_condition = get_market_condition()
+    print("Market condition:", market_condition)
 
     crypto_allocation = get_crypto_allocation(portfolio, total_value)
     underweight_assets = []
@@ -142,6 +171,17 @@ def buy_underweight_assets():
 
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
+
+        # Smart market behavior
+        if market_condition == "dip":
+            # During dips, only buy core growth/dividend growth
+            if symbol not in ["VTI", "SCHD"]:
+                continue
+
+        elif market_condition == "strong":
+            # During strong market moves, pause VTI and focus income/safety
+            if symbol == "VTI":
+                continue
 
         gap = target_pct - current_pct
         underweight_assets.append((symbol, gap))
@@ -166,7 +206,7 @@ def run_bot():
     check_profit_take(positions)
     buy_underweight_assets()
 
-    print("Live bot run complete.")
+    print("Live smart bot run complete.")
 
 
 if __name__ == "__main__":
