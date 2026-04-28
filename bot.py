@@ -1,10 +1,11 @@
 import os
 import alpaca_trade_api as tradeapi
+from alpaca_trade_api.rest import TimeFrame
 
 API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-BASE_URL = "https://api.alpaca.markets"  # LIVE trading
+BASE_URL = "https://api.alpaca.markets"  # LIVE
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
@@ -25,6 +26,34 @@ min_order_size = 1.00
 max_single_asset_pct = 0.30
 max_crypto_total_pct = 0.05
 
+max_trades_per_run = 5
+
+profit_level_1 = 0.05
+profit_level_2 = 0.10
+profit_level_3 = 0.20
+
+stop_loss_pct = -0.08
+crash_protection_pct = -0.04
+
+
+def is_market_open():
+    clock = api.get_clock()
+    return clock.is_open
+
+
+def normalize_symbol(symbol):
+    if symbol == "BTCUSD":
+        return "BTC/USD"
+    if symbol == "ETHUSD":
+        return "ETH/USD"
+    return symbol
+
+
+def order_time_in_force(symbol):
+    if symbol in crypto_assets:
+        return "gtc"
+    return "day"
+
 
 def get_portfolio():
     positions = api.list_positions()
@@ -32,7 +61,7 @@ def get_portfolio():
     total_positions_value = 0
 
     for p in positions:
-        symbol = p.symbol
+        symbol = normalize_symbol(p.symbol)
         value = float(p.market_value)
         portfolio[symbol] = value
         total_positions_value += value
@@ -59,7 +88,7 @@ def get_crypto_allocation(portfolio, total_value):
 
 def get_market_condition():
     try:
-        bars = api.get_bars("VTI", "1Day", limit=2).df
+        bars = api.get_bars("VTI", TimeFrame.Day, limit=3).df
 
         if len(bars) < 2:
             return "neutral"
@@ -69,7 +98,9 @@ def get_market_condition():
 
         change_pct = (latest["close"] - previous["close"]) / previous["close"]
 
-        if change_pct <= -0.02:
+        if change_pct <= crash_protection_pct:
+            return "crash"
+        elif change_pct <= -0.02:
             return "dip"
         elif change_pct >= 0.02:
             return "strong"
@@ -83,7 +114,7 @@ def get_market_condition():
 
 def submit_buy(symbol, dollar_amount):
     if dollar_amount < min_order_size:
-        return
+        return False
 
     print(f"Buying ${round(dollar_amount, 2)} of {symbol}")
 
@@ -92,28 +123,37 @@ def submit_buy(symbol, dollar_amount):
         notional=round(dollar_amount, 2),
         side="buy",
         type="market",
-        time_in_force="day"
+        time_in_force=order_time_in_force(symbol)
     )
+
+    return True
 
 
 def submit_sell(symbol, qty):
     if qty <= 0:
-        return
+        return False
 
-    print(f"Selling {qty} of {symbol} to take profit")
+    print(f"Selling {qty} of {symbol}")
 
     api.submit_order(
         symbol=symbol,
         qty=qty,
         side="sell",
         type="market",
-        time_in_force="day"
+        time_in_force=order_time_in_force(symbol)
     )
 
+    return True
 
-def check_profit_take(positions):
+
+def check_profit_take_and_stop_loss(positions):
+    trades = 0
+
     for p in positions:
-        symbol = p.symbol
+        if trades >= max_trades_per_run:
+            break
+
+        symbol = normalize_symbol(p.symbol)
 
         if symbol in crypto_assets:
             continue
@@ -127,10 +167,21 @@ def check_profit_take(positions):
 
         gain_pct = (current_price - avg_entry_price) / avg_entry_price
 
-        if gain_pct >= 0.10:
-            sell_pct = 0.50
-        elif gain_pct >= 0.05:
-            sell_pct = 0.25
+        # Stop-loss protection
+        if gain_pct <= stop_loss_pct:
+            qty_to_sell = qty * 0.50
+            print(f"{symbol} down {round(gain_pct * 100, 2)}% → defensive sell 50%")
+            if submit_sell(symbol, qty_to_sell):
+                trades += 1
+            continue
+
+        # Multi-level profit taking
+        if gain_pct >= profit_level_3:
+            sell_pct = 0.60
+        elif gain_pct >= profit_level_2:
+            sell_pct = 0.40
+        elif gain_pct >= profit_level_1:
+            sell_pct = 0.20
         else:
             continue
 
@@ -138,10 +189,11 @@ def check_profit_take(positions):
 
         print(
             f"{symbol} up {round(gain_pct * 100, 2)}% "
-            f"→ Selling {int(sell_pct * 100)}%"
+            f"→ taking profit on {int(sell_pct * 100)}%"
         )
 
-        submit_sell(symbol, qty_to_sell)
+        if submit_sell(symbol, qty_to_sell):
+            trades += 1
 
 
 def buy_underweight_assets():
@@ -172,14 +224,19 @@ def buy_underweight_assets():
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
 
-        # Smart market behavior
-        if market_condition == "dip":
-            # During dips, only buy core growth/dividend growth
-            if symbol not in ["VTI", "SCHD"]:
+        # Elite behavior
+        if market_condition == "crash":
+            # In crash mode, protect capital with SGOV only
+            if symbol != "SGOV":
+                continue
+
+        elif market_condition == "dip":
+            # In normal dip, buy growth/dividend strength
+            if symbol not in ["VTI", "SCHD", "SGOV"]:
                 continue
 
         elif market_condition == "strong":
-            # During strong market moves, pause VTI and focus income/safety
+            # In hot market, avoid chasing VTI
             if symbol == "VTI":
                 continue
 
@@ -191,10 +248,16 @@ def buy_underweight_assets():
         return
 
     total_gap = sum(gap for _, gap in underweight_assets)
+    trades = 0
 
     for symbol, gap in underweight_assets:
+        if trades >= max_trades_per_run:
+            break
+
         buy_amount = investable_cash * (gap / total_gap)
-        submit_buy(symbol, buy_amount)
+
+        if submit_buy(symbol, buy_amount):
+            trades += 1
 
 
 def run_bot():
@@ -203,10 +266,15 @@ def run_bot():
     print(f"Total portfolio value: ${round(total_value, 2)}")
     print(f"Cash available: ${round(cash, 2)}")
 
-    check_profit_take(positions)
+    # Stocks only run during market hours
+    if not is_market_open():
+        print("Stock market is closed. Bot will not place stock trades now.")
+        return
+
+    check_profit_take_and_stop_loss(positions)
     buy_underweight_assets()
 
-    print("Live smart bot run complete.")
+    print("Elite live bot run complete.")
 
 
 if __name__ == "__main__":
