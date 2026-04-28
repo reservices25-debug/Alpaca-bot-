@@ -10,15 +10,16 @@ api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 total_budget = 10
 
 basket = {
-    "SGOV": 0.25,
-    "SCHD": 0.25,
+    "SGOV": 0.20,
+    "SCHD": 0.20,
     "JEPI": 0.20,
-    "O": 0.15,
-    "VTI": 0.15
+    "O": 0.10,
+    "VTI": 0.10,
+    "BTC/USD": 0.10,
+    "ETH/USD": 0.10
 }
 
-profit_target = 1.03  # sell if position is up 3%
-dip_buy_level = 0.98  # buy if price is below 2% from recent high logic fallback
+profit_target = 1.03
 
 account = api.get_account()
 cash = float(account.cash)
@@ -30,7 +31,7 @@ if account.trading_blocked:
     print("Trading blocked.")
     exit()
 
-# Profit-taking logic
+# Sell positions that are up 3%
 positions = api.list_positions()
 
 for position in positions:
@@ -49,7 +50,7 @@ for position in positions:
         )
         print(f"Sold {symbol} for profit at ${current_price}")
 
-# Buying logic
+# Buy basket
 if cash >= total_budget:
     for symbol, weight in basket.items():
         dollars = round(total_budget * weight, 2)
