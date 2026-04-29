@@ -41,6 +41,21 @@ def is_market_open():
     return api.get_clock().is_open
 
 
+def session_type():
+    t = now_ny().time()
+
+    if datetime.strptime("04:00", "%H:%M").time() <= t < datetime.strptime("09:30", "%H:%M").time():
+        return "pre_market"
+
+    if datetime.strptime("09:30", "%H:%M").time() <= t <= datetime.strptime("16:00", "%H:%M").time():
+        return "regular"
+
+    if datetime.strptime("16:00", "%H:%M").time() < t <= datetime.strptime("20:00", "%H:%M").time():
+        return "after_hours"
+
+    return "closed"
+
+
 def get_account():
     account = api.get_account()
     return float(account.cash), float(account.equity), float(account.last_equity)
@@ -79,8 +94,7 @@ def market_regime():
             return "bullish"
         elif price < ma20 < ma50:
             return "bearish"
-        else:
-            return "neutral"
+        return "neutral"
 
     except Exception as e:
         log(f"Market regime error: {e}")
@@ -91,11 +105,9 @@ def market_volatility_ok():
     try:
         bars = api.get_bars("SPY", TimeFrame.Minute, limit=30).df
         close = bars["close"]
-
         change = abs(close.iloc[-1] - close.iloc[0]) / close.iloc[0]
 
         log(f"SPY short volatility: {round(change * 100, 2)}%")
-
         return change <= volatility_limit
 
     except Exception as e:
@@ -108,8 +120,7 @@ def candidate_symbols(regime):
         return ["SGOV", "SCHD", "JEPI", "O"]
     elif regime == "bullish":
         return ["QQQ", "SPY", "VTI", "JEPQ", "SCHD", "JEPI"]
-    else:
-        return ["SPY", "QQQ", "SCHD", "JEPI", "SGOV"]
+    return ["SPY", "QQQ", "SCHD", "JEPI", "SGOV"]
 
 
 def score_symbol(symbol):
@@ -257,7 +268,6 @@ def open_new_trades(regime):
         return
 
     candidates = candidate_symbols(regime)
-
     ranked = []
 
     for symbol in candidates:
@@ -296,11 +306,43 @@ def open_new_trades(regime):
             investable_cash -= amount
 
 
+def scan_only(regime):
+    log("SCAN MODE ONLY — no orders will be placed.")
+
+    candidates = candidate_symbols(regime)
+
+    ranked = []
+
+    for symbol in candidates:
+        score = score_symbol(symbol)
+        ranked.append((symbol, score))
+        log(f"SCAN {symbol}: score {score}")
+
+    ranked.sort(key=lambda x: x[1], reverse=True)
+
+    if ranked:
+        log(f"Top scan candidate: {ranked[0][0]} score {ranked[0][1]}")
+
+
 def run_bot():
-    log("----- STEP 5 REAL EDGE BOT START -----")
+    log("----- STEP 6 DUAL MODE BOT START -----")
+
+    session = session_type()
+    log(f"Session: {session}")
+
+    if session == "closed":
+        log("Market fully closed. No action.")
+        return
+
+    regime = market_regime()
+    log(f"Market regime: {regime}")
+
+    if session in ["pre_market", "after_hours"]:
+        scan_only(regime)
+        return
 
     if not is_market_open():
-        log("Market closed. No trades.")
+        log("Market not officially open. No trades.")
         return
 
     current_time = now_ny().time()
@@ -317,13 +359,10 @@ def run_bot():
         log("Volatility too high. Defensive pause.")
         return
 
-    regime = market_regime()
-    log(f"Market regime: {regime}")
-
     manage_positions(regime)
     open_new_trades(regime)
 
-    log("----- STEP 5 REAL EDGE BOT END -----")
+    log("----- STEP 6 DUAL MODE BOT END -----")
 
 
 if __name__ == "__main__":
