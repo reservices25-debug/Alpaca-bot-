@@ -5,11 +5,11 @@ from alpaca_trade_api.rest import TimeFrame
 API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-BASE_URL = "https://api.alpaca.markets"  # LIVE
+BASE_URL = "https://api.alpaca.markets"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
-# Daily-flow focused allocation
+# 🔥 Updated allocation (DOGE added)
 targets = {
     "JEPI": 0.18,
     "JEPQ": 0.12,
@@ -19,21 +19,25 @@ targets = {
     "SCHD": 0.15,
     "SGOV": 0.15,
     "VTI": 0.10,
-    "BTC/USD": 0.025,
-    "ETH/USD": 0.025
+    "BTC/USD": 0.02,
+    "ETH/USD": 0.02,
+    "DOGE/USD": 0.01
 }
 
-crypto_assets = ["BTC/USD", "ETH/USD"]
+# 🔥 Crypto list updated
+crypto_assets = ["BTC/USD", "ETH/USD", "DOGE/USD"]
 
 cash_reserve_pct = 0.10
 min_order_size = 1.00
 max_single_asset_pct = 0.25
 max_crypto_total_pct = 0.05
-max_trades_per_run = 6
 
-profit_level_1 = 0.03
-profit_level_2 = 0.06
-profit_level_3 = 0.12
+max_trades_per_run = 8
+
+# 🔥 Faster trading
+profit_level_1 = 0.02
+profit_level_2 = 0.04
+profit_level_3 = 0.08
 
 stop_loss_pct = -0.08
 crash_protection_pct = -0.04
@@ -48,6 +52,8 @@ def normalize_symbol(symbol):
         return "BTC/USD"
     if symbol == "ETHUSD":
         return "ETH/USD"
+    if symbol == "DOGEUSD":
+        return "DOGE/USD"
     return symbol
 
 
@@ -87,26 +93,24 @@ def get_crypto_allocation(portfolio, total_value):
 
 def get_market_condition():
     try:
-        bars = api.get_bars("VTI", TimeFrame.Day, limit=25).df
+        bars = api.get_bars("VTI", TimeFrame.Day, limit=10).df
 
-        if len(bars) < 20:
+        if len(bars) < 2:
             return "neutral"
 
         latest = bars.iloc[-1]
         previous = bars.iloc[-2]
 
         change_pct = (latest["close"] - previous["close"]) / previous["close"]
-        ma20 = bars["close"].rolling(20).mean().iloc[-1]
-        price = latest["close"]
 
         if change_pct <= crash_protection_pct:
             return "crash"
         elif change_pct <= -0.02:
             return "dip"
-        elif price > ma20:
-            return "uptrend"
+        elif change_pct >= 0.02:
+            return "strong"
         else:
-            return "downtrend"
+            return "neutral"
 
     except Exception as e:
         print("Market check failed:", e)
@@ -117,7 +121,7 @@ def submit_buy(symbol, dollar_amount):
     if dollar_amount < min_order_size:
         return False
 
-    print(f"Buying ${round(dollar_amount, 2)} of {symbol}")
+    print(f"EXECUTED BUY: {symbol} ${round(dollar_amount, 2)}")
 
     try:
         api.submit_order(
@@ -128,7 +132,6 @@ def submit_buy(symbol, dollar_amount):
             time_in_force=order_time_in_force(symbol)
         )
         return True
-
     except Exception as e:
         print(f"Buy failed for {symbol}: {e}")
         return False
@@ -138,7 +141,7 @@ def submit_sell(symbol, qty):
     if qty <= 0:
         return False
 
-    print(f"Selling {qty} of {symbol}")
+    print(f"EXECUTED SELL: {symbol} qty {qty}")
 
     try:
         api.submit_order(
@@ -149,7 +152,6 @@ def submit_sell(symbol, qty):
             time_in_force=order_time_in_force(symbol)
         )
         return True
-
     except Exception as e:
         print(f"Sell failed for {symbol}: {e}")
         return False
@@ -176,30 +178,38 @@ def check_profit_take_and_stop_loss(positions, market_open):
 
         gain_pct = (current_price - avg_entry_price) / avg_entry_price
 
+        # 🔥 Crypto trades faster (DOGE included)
+        if symbol in crypto_assets:
+            local_p1 = 0.015
+            local_p2 = 0.03
+            local_p3 = 0.06
+        else:
+            local_p1 = profit_level_1
+            local_p2 = profit_level_2
+            local_p3 = profit_level_3
+
+        # Stop loss
         if gain_pct <= stop_loss_pct:
             qty_to_sell = qty * 0.50
-            print(f"{symbol} down {round(gain_pct * 100, 2)}% → defensive sell 50%")
+            print(f"{symbol} STOP LOSS {round(gain_pct * 100, 2)}%")
 
             if submit_sell(symbol, qty_to_sell):
                 trades += 1
-
             continue
 
-        if gain_pct >= profit_level_3:
+        # Profit taking
+        if gain_pct >= local_p3:
             sell_pct = 0.60
-        elif gain_pct >= profit_level_2:
+        elif gain_pct >= local_p2:
             sell_pct = 0.40
-        elif gain_pct >= profit_level_1:
+        elif gain_pct >= local_p1:
             sell_pct = 0.20
         else:
             continue
 
         qty_to_sell = qty * sell_pct
 
-        print(
-            f"{symbol} up {round(gain_pct * 100, 2)}% "
-            f"→ taking profit on {int(sell_pct * 100)}%"
-        )
+        print(f"{symbol} PROFIT {round(gain_pct * 100, 2)}%")
 
         if submit_sell(symbol, qty_to_sell):
             trades += 1
@@ -212,11 +222,8 @@ def buy_underweight_assets():
     investable_cash = cash - required_cash_reserve
 
     if investable_cash < min_order_size:
-        print("Not enough investable cash.")
+        print("Not enough cash.")
         return
-
-    market_condition = get_market_condition()
-    print("Market condition:", market_condition)
 
     crypto_allocation = get_crypto_allocation(portfolio, total_value)
     underweight_assets = []
@@ -233,46 +240,12 @@ def buy_underweight_assets():
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
 
-        # Daily-flow strategy logic
-        if market_condition == "crash":
-            if symbol != "SGOV":
-                continue
-
-        elif market_condition == "dip":
-            if symbol not in ["SCHD", "VTI", "SGOV", "JEPI"]:
-                continue
-
-        elif market_condition == "uptrend":
-            if symbol == "SGOV":
-                continue
-
-        elif market_condition == "downtrend":
-            if symbol not in ["SGOV", "JEPI", "JEPQ", "SCHD", "O"]:
-                continue
-
         gap = target_pct - current_pct
         underweight_assets.append((symbol, gap))
 
     if not underweight_assets:
-        print("No underweight assets to buy.")
+        print("Nothing to buy.")
         return
-
-    priority_order = [
-        "JEPI",
-        "JEPQ",
-        "SCHD",
-        "O",
-        "SGOV",
-        "XYLD",
-        "QYLD",
-        "VTI",
-        "BTC/USD",
-        "ETH/USD"
-    ]
-
-    underweight_assets.sort(
-        key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 999
-    )
 
     total_gap = sum(gap for _, gap in underweight_assets)
     trades = 0
@@ -290,64 +263,32 @@ def buy_underweight_assets():
 def buy_crypto_only():
     portfolio, total_value, cash, positions = get_portfolio()
 
-    required_cash_reserve = total_value * cash_reserve_pct
-    investable_cash = cash - required_cash_reserve
+    investable_cash = cash - (total_value * cash_reserve_pct)
 
     if investable_cash < min_order_size:
-        print("Not enough investable cash for crypto-only mode.")
         return
-
-    crypto_allocation = get_crypto_allocation(portfolio, total_value)
-
-    if crypto_allocation >= max_crypto_total_pct:
-        print("Crypto allocation already at max.")
-        return
-
-    crypto_underweight = []
 
     for symbol in crypto_assets:
-        current_pct = get_current_allocation(portfolio, total_value, symbol)
-        target_pct = targets[symbol]
-
-        if current_pct < target_pct:
-            gap = target_pct - current_pct
-            crypto_underweight.append((symbol, gap))
-
-    if not crypto_underweight:
-        print("No underweight crypto assets.")
-        return
-
-    total_gap = sum(gap for _, gap in crypto_underweight)
-    trades = 0
-
-    for symbol, gap in crypto_underweight:
-        if trades >= max_trades_per_run:
-            break
-
-        buy_amount = investable_cash * (gap / total_gap)
-
-        if submit_buy(symbol, buy_amount):
-            trades += 1
+        buy_amount = investable_cash / len(crypto_assets)
+        submit_buy(symbol, buy_amount)
 
 
 def run_bot():
+    print("----- BOT RUN START -----")
+
     portfolio, total_value, cash, positions = get_portfolio()
     market_open = is_market_open()
 
-    print(f"Total portfolio value: ${round(total_value, 2)}")
-    print(f"Cash available: ${round(cash, 2)}")
-    print(f"Market open: {market_open}")
+    print(f"Portfolio: ${round(total_value, 2)} | Cash: ${round(cash, 2)}")
 
     check_profit_take_and_stop_loss(positions, market_open)
 
     if market_open:
-        print("Stock market open → daily-flow hybrid mode.")
         buy_underweight_assets()
     else:
-        print("Stock market closed → crypto-only mode.")
         buy_crypto_only()
 
-    print("Daily-flow hybrid live bot run complete.")
+    print("----- BOT RUN END -----")
 
 
 if __name__ == "__main__":
