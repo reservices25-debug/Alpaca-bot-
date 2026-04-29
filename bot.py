@@ -9,12 +9,16 @@ BASE_URL = "https://api.alpaca.markets"  # LIVE
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
+# Daily-flow focused allocation
 targets = {
-    "SGOV": 0.20,
-    "VTI": 0.20,
-    "SCHD": 0.20,
-    "JEPI": 0.20,
-    "O": 0.15,
+    "JEPI": 0.18,
+    "JEPQ": 0.12,
+    "XYLD": 0.08,
+    "QYLD": 0.07,
+    "O": 0.10,
+    "SCHD": 0.15,
+    "SGOV": 0.15,
+    "VTI": 0.10,
     "BTC/USD": 0.025,
     "ETH/USD": 0.025
 }
@@ -23,13 +27,13 @@ crypto_assets = ["BTC/USD", "ETH/USD"]
 
 cash_reserve_pct = 0.10
 min_order_size = 1.00
-max_single_asset_pct = 0.30
+max_single_asset_pct = 0.25
 max_crypto_total_pct = 0.05
-max_trades_per_run = 5
+max_trades_per_run = 6
 
-profit_level_1 = 0.05
-profit_level_2 = 0.10
-profit_level_3 = 0.20
+profit_level_1 = 0.03
+profit_level_2 = 0.06
+profit_level_3 = 0.12
 
 stop_loss_pct = -0.08
 crash_protection_pct = -0.04
@@ -78,8 +82,7 @@ def get_current_allocation(portfolio, total_value, symbol):
 def get_crypto_allocation(portfolio, total_value):
     if total_value <= 0:
         return 0
-    crypto_value = sum(portfolio.get(asset, 0) for asset in crypto_assets)
-    return crypto_value / total_value
+    return sum(portfolio.get(asset, 0) for asset in crypto_assets) / total_value
 
 
 def get_market_condition():
@@ -116,15 +119,19 @@ def submit_buy(symbol, dollar_amount):
 
     print(f"Buying ${round(dollar_amount, 2)} of {symbol}")
 
-    api.submit_order(
-        symbol=symbol,
-        notional=round(dollar_amount, 2),
-        side="buy",
-        type="market",
-        time_in_force=order_time_in_force(symbol)
-    )
+    try:
+        api.submit_order(
+            symbol=symbol,
+            notional=round(dollar_amount, 2),
+            side="buy",
+            type="market",
+            time_in_force=order_time_in_force(symbol)
+        )
+        return True
 
-    return True
+    except Exception as e:
+        print(f"Buy failed for {symbol}: {e}")
+        return False
 
 
 def submit_sell(symbol, qty):
@@ -133,15 +140,19 @@ def submit_sell(symbol, qty):
 
     print(f"Selling {qty} of {symbol}")
 
-    api.submit_order(
-        symbol=symbol,
-        qty=qty,
-        side="sell",
-        type="market",
-        time_in_force=order_time_in_force(symbol)
-    )
+    try:
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="sell",
+            type="market",
+            time_in_force=order_time_in_force(symbol)
+        )
+        return True
 
-    return True
+    except Exception as e:
+        print(f"Sell failed for {symbol}: {e}")
+        return False
 
 
 def check_profit_take_and_stop_loss(positions, market_open):
@@ -168,8 +179,10 @@ def check_profit_take_and_stop_loss(positions, market_open):
         if gain_pct <= stop_loss_pct:
             qty_to_sell = qty * 0.50
             print(f"{symbol} down {round(gain_pct * 100, 2)}% → defensive sell 50%")
+
             if submit_sell(symbol, qty_to_sell):
                 trades += 1
+
             continue
 
         if gain_pct >= profit_level_3:
@@ -220,13 +233,13 @@ def buy_underweight_assets():
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
 
-        # Upgraded strategy logic
+        # Daily-flow strategy logic
         if market_condition == "crash":
             if symbol != "SGOV":
                 continue
 
         elif market_condition == "dip":
-            if symbol not in ["VTI", "SCHD", "SGOV"]:
+            if symbol not in ["SCHD", "VTI", "SGOV", "JEPI"]:
                 continue
 
         elif market_condition == "uptrend":
@@ -234,7 +247,7 @@ def buy_underweight_assets():
                 continue
 
         elif market_condition == "downtrend":
-            if symbol not in ["SGOV", "JEPI", "SCHD"]:
+            if symbol not in ["SGOV", "JEPI", "JEPQ", "SCHD", "O"]:
                 continue
 
         gap = target_pct - current_pct
@@ -244,7 +257,18 @@ def buy_underweight_assets():
         print("No underweight assets to buy.")
         return
 
-    priority_order = ["JEPI", "SCHD", "O", "SGOV", "VTI", "BTC/USD", "ETH/USD"]
+    priority_order = [
+        "JEPI",
+        "JEPQ",
+        "SCHD",
+        "O",
+        "SGOV",
+        "XYLD",
+        "QYLD",
+        "VTI",
+        "BTC/USD",
+        "ETH/USD"
+    ]
 
     underweight_assets.sort(
         key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 999
@@ -317,13 +341,13 @@ def run_bot():
     check_profit_take_and_stop_loss(positions, market_open)
 
     if market_open:
-        print("Stock market open → adaptive hybrid mode.")
+        print("Stock market open → daily-flow hybrid mode.")
         buy_underweight_assets()
     else:
         print("Stock market closed → crypto-only mode.")
         buy_crypto_only()
 
-    print("Adaptive hybrid live bot run complete.")
+    print("Daily-flow hybrid live bot run complete.")
 
 
 if __name__ == "__main__":
