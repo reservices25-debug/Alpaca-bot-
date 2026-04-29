@@ -2,8 +2,7 @@ name: Run Hybrid Alpaca Bot
 
 on:
   schedule:
-    - cron: "35 13 * * 1-5"   # market open weekday run
-    - cron: "0 * * * *"       # every hour
+    - cron: "*/15 13-20 * * 1-5"   # every 15 min during market hours UTC
   workflow_dispatch:
 
 jobs:
