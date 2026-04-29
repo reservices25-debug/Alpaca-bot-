@@ -2,7 +2,7 @@ name: Run Institutional Alpaca Bot
 
 on:
   schedule:
-    - cron: "*/15 * * * 1-5"
+    - cron: "*/10 * * * 1-5"   # runs every 10 minutes (forces GitHub to trigger)
   workflow_dispatch:
 
 jobs:
@@ -26,3 +26,12 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: python bot.py
+
+      - name: Upload bot logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-reports
+          path: |
+            trade_log.csv
+            portfolio_snapshot.csv
+            risk_report.txt
