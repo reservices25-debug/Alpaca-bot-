@@ -36,8 +36,7 @@ crash_protection_pct = -0.04
 
 
 def is_market_open():
-    clock = api.get_clock()
-    return clock.is_open
+    return api.get_clock().is_open
 
 
 def normalize_symbol(symbol):
@@ -49,9 +48,7 @@ def normalize_symbol(symbol):
 
 
 def order_time_in_force(symbol):
-    if symbol in crypto_assets:
-        return "gtc"
-    return "day"
+    return "gtc" if symbol in crypto_assets else "day"
 
 
 def get_portfolio():
@@ -87,24 +84,26 @@ def get_crypto_allocation(portfolio, total_value):
 
 def get_market_condition():
     try:
-        bars = api.get_bars("VTI", TimeFrame.Day, limit=3).df
+        bars = api.get_bars("VTI", TimeFrame.Day, limit=25).df
 
-        if len(bars) < 2:
+        if len(bars) < 20:
             return "neutral"
 
         latest = bars.iloc[-1]
         previous = bars.iloc[-2]
 
         change_pct = (latest["close"] - previous["close"]) / previous["close"]
+        ma20 = bars["close"].rolling(20).mean().iloc[-1]
+        price = latest["close"]
 
         if change_pct <= crash_protection_pct:
             return "crash"
         elif change_pct <= -0.02:
             return "dip"
-        elif change_pct >= 0.02:
-            return "strong"
+        elif price > ma20:
+            return "uptrend"
         else:
-            return "neutral"
+            return "downtrend"
 
     except Exception as e:
         print("Market check failed:", e)
@@ -154,7 +153,6 @@ def check_profit_take_and_stop_loss(positions, market_open):
 
         symbol = normalize_symbol(p.symbol)
 
-        # Only manage stock positions during stock market hours
         if symbol not in crypto_assets and not market_open:
             continue
 
@@ -222,6 +220,7 @@ def buy_underweight_assets():
         if symbol in crypto_assets and crypto_allocation >= max_crypto_total_pct:
             continue
 
+        # Upgraded strategy logic
         if market_condition == "crash":
             if symbol != "SGOV":
                 continue
@@ -230,8 +229,12 @@ def buy_underweight_assets():
             if symbol not in ["VTI", "SCHD", "SGOV"]:
                 continue
 
-        elif market_condition == "strong":
-            if symbol == "VTI":
+        elif market_condition == "uptrend":
+            if symbol == "SGOV":
+                continue
+
+        elif market_condition == "downtrend":
+            if symbol not in ["SGOV", "JEPI", "SCHD"]:
                 continue
 
         gap = target_pct - current_pct
@@ -240,6 +243,12 @@ def buy_underweight_assets():
     if not underweight_assets:
         print("No underweight assets to buy.")
         return
+
+    priority_order = ["JEPI", "SCHD", "O", "SGOV", "VTI", "BTC/USD", "ETH/USD"]
+
+    underweight_assets.sort(
+        key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 999
+    )
 
     total_gap = sum(gap for _, gap in underweight_assets)
     trades = 0
@@ -308,13 +317,13 @@ def run_bot():
     check_profit_take_and_stop_loss(positions, market_open)
 
     if market_open:
-        print("Stock market open → full hybrid mode.")
+        print("Stock market open → adaptive hybrid mode.")
         buy_underweight_assets()
     else:
         print("Stock market closed → crypto-only mode.")
         buy_crypto_only()
 
-    print("Hybrid live bot run complete.")
+    print("Adaptive hybrid live bot run complete.")
 
 
 if __name__ == "__main__":
