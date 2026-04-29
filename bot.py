@@ -8,28 +8,34 @@ API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 BASE_URL = "https://api.alpaca.markets"
 
-api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 
 symbols = ["JEPI", "JEPQ", "SCHD", "O", "SGOV", "SPY", "QQQ", "VTI", "XYLD", "QYLD"]
 
 ny = pytz.timezone("America/New_York")
 
+# === CONFIG ===
 cash_reserve_pct = 0.30
 max_position_pct = 0.08
 min_order_size = 1.00
+
 max_trades_per_day = 8
 max_open_positions = 3
 
 take_profit_pct = 0.01
 stop_loss_pct = -0.006
+
 daily_loss_limit_pct = -0.02
-
-min_entry_score = 4
-min_hold_score = 3
+volatility_threshold = 0.02  # skip market if too volatile
 
 
-def now_ny():
+# === UTILS ===
+def now():
     return datetime.now(ny)
+
+
+def log(msg):
+    print(f"[{now()}] {msg}")
 
 
 def is_market_open():
@@ -37,74 +43,66 @@ def is_market_open():
 
 
 def get_account():
-    account = api.get_account()
-    return float(account.cash), float(account.equity), float(account.last_equity)
+    acc = api.get_account()
+    return float(acc.cash), float(acc.equity), float(acc.last_equity)
 
 
 def get_position(symbol):
     try:
         return api.get_position(symbol)
-    except Exception:
+    except:
         return None
 
 
-def todays_trade_count():
-    try:
-        start = now_ny().replace(hour=0, minute=0, second=0, microsecond=0)
-        activities = api.get_activities(activity_types="FILL", after=start.isoformat())
-        return len(activities)
-    except Exception as e:
-        print("Trade count error:", e)
-        return 0
+# === RISK SYSTEM ===
+def daily_drawdown():
+    _, equity, last_equity = get_account()
+    return (equity - last_equity) / last_equity
 
 
+def kill_switch():
+    dd = daily_drawdown()
+    if dd <= daily_loss_limit_pct:
+        log(f"KILL SWITCH TRIGGERED: {round(dd*100,2)}%")
+        return True
+    return False
+
+
+# === MARKET STATE ===
 def market_regime():
-    try:
-        bars = api.get_bars("SPY", TimeFrame.Day, limit=50).df
+    bars = api.get_bars("SPY", TimeFrame.Day, limit=50).df
 
-        if len(bars) < 30:
-            return "neutral"
+    close = bars["close"]
+    price = close.iloc[-1]
+    ma20 = close.tail(20).mean()
+    ma50 = close.tail(50).mean()
 
-        close = bars["close"]
-        price = close.iloc[-1]
-        ma20 = close.tail(20).mean()
-        ma50 = close.tail(50).mean()
-
-        if price > ma20 > ma50:
-            return "bullish"
-        elif price < ma20 < ma50:
-            return "bearish"
-        else:
-            return "neutral"
-
-    except Exception as e:
-        print("Market regime error:", e)
-        return "neutral"
+    if price > ma20 > ma50:
+        return "bull"
+    elif price < ma20 < ma50:
+        return "bear"
+    return "neutral"
 
 
-def score_symbol(symbol):
+def market_volatility():
+    bars = api.get_bars("SPY", TimeFrame.Minute, limit=30).df
+    close = bars["close"]
+
+    change = abs(close.iloc[-1] - close.iloc[0]) / close.iloc[0]
+    return change
+
+
+# === SCORING ===
+def score(symbol):
     try:
         bars = api.get_bars(symbol, TimeFrame.Minute, limit=60).df
-
-        if len(bars) < 50:
-            return -999
-
         close = bars["close"]
-        volume = bars["volume"]
-
-        last = close.iloc[-1]
-        prev = close.iloc[-2]
 
         ma5 = close.tail(5).mean()
         ma20 = close.tail(20).mean()
-        ma50 = close.tail(50).mean()
 
-        momentum_1 = (last - prev) / prev
-        momentum_20 = (last - close.iloc[-20]) / close.iloc[-20]
-
-        avg_volume = volume.tail(20).mean()
-        latest_volume = volume.iloc[-1]
-        volume_score = latest_volume / avg_volume if avg_volume > 0 else 0
+        last = close.iloc[-1]
+        prev = close.iloc[-2]
 
         score = 0
 
@@ -112,194 +110,136 @@ def score_symbol(symbol):
             score += 1
         if ma5 > ma20:
             score += 1
-        if ma20 > ma50:
-            score += 1
-        if momentum_1 > 0:
-            score += 1
-        if momentum_20 > 0:
-            score += 1
-        if volume_score >= 0.80:
+        if last > prev:
             score += 1
 
         return score
-
-    except Exception as e:
-        print(f"Score failed for {symbol}: {e}")
+    except:
         return -999
 
 
-def candidate_symbols_by_regime(regime):
-    if regime == "bearish":
-        return ["SGOV", "JEPI", "SCHD", "O"]
-    elif regime == "bullish":
-        return ["QQQ", "SPY", "VTI", "JEPQ", "SCHD", "JEPI"]
-    else:
-        return ["SPY", "QQQ", "JEPI", "JEPQ", "SCHD", "SGOV"]
-
-
-def submit_buy(symbol, amount):
+# === TRADING ===
+def buy(symbol, amount):
     if amount < min_order_size:
-        return False
+        return
 
-    print(f"BUY {symbol} ${round(amount, 2)}")
+    log(f"BUY {symbol} ${round(amount,2)}")
 
-    try:
-        api.submit_order(
-            symbol=symbol,
-            notional=round(amount, 2),
-            side="buy",
-            type="market",
-            time_in_force="day"
-        )
-        return True
-    except Exception as e:
-        print(f"Buy failed for {symbol}: {e}")
-        return False
+    api.submit_order(
+        symbol=symbol,
+        notional=round(amount, 2),
+        side="buy",
+        type="market",
+        time_in_force="day"
+    )
 
 
-def submit_sell(symbol, qty):
-    if qty <= 0:
-        return False
+def sell(symbol, qty):
+    log(f"SELL {symbol}")
 
-    print(f"SELL {symbol} qty {qty}")
-
-    try:
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side="sell",
-            type="market",
-            time_in_force="day"
-        )
-        return True
-    except Exception as e:
-        print(f"Sell failed for {symbol}: {e}")
-        return False
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side="sell",
+        type="market",
+        time_in_force="day"
+    )
 
 
+# === POSITION MANAGEMENT ===
 def manage_positions(regime):
-    trades = 0
-    allowed = candidate_symbols_by_regime(regime)
-
-    for symbol in symbols:
-        if trades >= max_trades_per_day:
-            break
-
-        position = get_position(symbol)
-
-        if not position:
+    for s in symbols:
+        pos = get_position(s)
+        if not pos:
             continue
 
-        qty = float(position.qty)
-        avg_entry = float(position.avg_entry_price)
-        current_price = float(position.current_price)
+        qty = float(pos.qty)
+        entry = float(pos.avg_entry_price)
+        price = float(pos.current_price)
 
-        if avg_entry <= 0:
-            continue
+        pnl = (price - entry) / entry
 
-        gain_pct = (current_price - avg_entry) / avg_entry
-        score = score_symbol(symbol)
+        if pnl >= take_profit_pct:
+            log(f"{s} TAKE PROFIT")
+            sell(s, qty)
 
-        if gain_pct >= take_profit_pct:
-            print(f"{symbol} profit target hit: {round(gain_pct * 100, 2)}%")
-            if submit_sell(symbol, qty):
-                trades += 1
-            continue
+        elif pnl <= stop_loss_pct:
+            log(f"{s} STOP LOSS")
+            sell(s, qty)
 
-        if gain_pct <= stop_loss_pct:
-            print(f"{symbol} stop loss hit: {round(gain_pct * 100, 2)}%")
-            if submit_sell(symbol, qty):
-                trades += 1
-            continue
-
-        if symbol not in allowed:
-            print(f"{symbol} no longer fits regime → rotating out")
-            if submit_sell(symbol, qty):
-                trades += 1
-            continue
-
-        if score < min_hold_score:
-            print(f"{symbol} score dropped to {score} → rotating out")
-            if submit_sell(symbol, qty):
-                trades += 1
-            continue
+        elif regime == "bear" and s not in ["SGOV", "JEPI", "SCHD"]:
+            log(f"{s} DEFENSIVE EXIT")
+            sell(s, qty)
 
 
-def open_new_trades(regime):
-    cash, equity, last_equity = get_account()
+# === ENTRY ENGINE ===
+def open_positions(regime):
+    cash, equity, _ = get_account()
 
-    daily_change = (equity - last_equity) / last_equity if last_equity > 0 else 0
+    reserve = equity * cash_reserve_pct
+    available = cash - reserve
 
-    if daily_change <= daily_loss_limit_pct:
-        print("Daily loss limit hit. No new trades.")
+    if available < min_order_size:
         return
-
-    if todays_trade_count() >= max_trades_per_day:
-        print("Max trades reached today.")
-        return
-
-    candidates = candidate_symbols_by_regime(regime)
 
     ranked = []
 
-    for symbol in candidates:
-        if get_position(symbol):
+    for s in symbols:
+        if get_position(s):
             continue
 
-        score = score_symbol(symbol)
-        print(f"{symbol} score: {score}")
-
-        if score >= min_entry_score:
-            ranked.append((symbol, score))
+        sc = score(s)
+        if sc >= 2:
+            ranked.append((s, sc))
 
     ranked.sort(key=lambda x: x[1], reverse=True)
 
-    if not ranked:
-        print("No strong candidates.")
-        return
+    open_count = len([s for s in symbols if get_position(s)])
 
-    open_positions = [s for s in symbols if get_position(s)]
-
-    if len(open_positions) >= max_open_positions:
-        print("Max open positions reached.")
-        return
-
-    reserve_cash = equity * cash_reserve_pct
-    investable_cash = cash - reserve_cash
-
-    if investable_cash < min_order_size:
-        print("Not enough investable cash.")
-        return
-
-    for symbol, score in ranked:
-        if todays_trade_count() >= max_trades_per_day:
+    for s, sc in ranked:
+        if open_count >= max_open_positions:
             break
 
-        if len([s for s in symbols if get_position(s)]) >= max_open_positions:
-            break
+        amount = min(equity * max_position_pct, available)
 
-        amount = min(equity * max_position_pct, investable_cash)
+        buy(s, amount)
 
-        if submit_buy(symbol, amount):
-            investable_cash -= amount
+        available -= amount
+        open_count += 1
 
 
-def run_bot():
-    print("----- INSTITUTIONAL STEP 2 BOT START -----")
-    print(f"Time NY: {now_ny()}")
+# === MAIN ===
+def run():
+    log("START BOT")
 
     if not is_market_open():
-        print("Market closed. No trades.")
+        log("MARKET CLOSED")
+        return
+
+    if kill_switch():
+        return
+
+    vol = market_volatility()
+    if vol > volatility_threshold:
+        log(f"VOLATILITY TOO HIGH: {round(vol*100,2)}%")
+        return
+
+    current_time = now().time()
+
+    # trading window (avoid open chaos + close chaos)
+    if current_time < datetime.strptime("10:00", "%H:%M").time() or \
+       current_time > datetime.strptime("15:30", "%H:%M").time():
+        log("OUTSIDE TRADING WINDOW")
         return
 
     regime = market_regime()
-    print(f"Market regime: {regime}")
+    log(f"REGIME: {regime}")
 
     manage_positions(regime)
-    open_new_trades(regime)
+    open_positions(regime)
 
-    print("----- INSTITUTIONAL STEP 2 BOT END -----")
+    log("END BOT")
 
 
 if __name__ == "__main__":
-    run_bot()
+    run()
