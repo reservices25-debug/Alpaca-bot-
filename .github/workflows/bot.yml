@@ -2,7 +2,7 @@ name: Run Institutional Alpaca Bot
 
 on:
   schedule:
-    - cron: "*/10 * * * 1-5"   # runs every 10 minutes (forces GitHub to trigger)
+    - cron: "*/10 * * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -35,3 +35,4 @@ jobs:
             trade_log.csv
             portfolio_snapshot.csv
             risk_report.txt
+            performance_report.txt
