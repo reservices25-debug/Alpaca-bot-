@@ -1,106 +1,111 @@
 import os
+from datetime import datetime
+import pytz
 import alpaca_trade_api as tradeapi
 from alpaca_trade_api.rest import TimeFrame
 
 API_KEY = os.getenv("API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
-
 BASE_URL = "https://api.alpaca.markets"  # LIVE
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
-# 🔥 Updated allocation (SPY + QQQ added)
-targets = {
-    "JEPI": 0.18,
-    "JEPQ": 0.14,
-    "SCHD": 0.14,
-    "O": 0.08,
-    "SGOV": 0.12,
-    "SPY": 0.12,
-    "QQQ": 0.12,
-    "VTI": 0.05,
-    "XYLD": 0.03,
-    "QYLD": 0.02
-}
+symbols = [
+    "JEPI", "JEPQ", "SCHD", "O", "SGOV",
+    "SPY", "QQQ", "VTI", "XYLD", "QYLD"
+]
 
-cash_reserve_pct = 0.10
+ny = pytz.timezone("America/New_York")
+
+cash_reserve_pct = 0.30
+max_position_pct = 0.08
 min_order_size = 1.00
-max_single_asset_pct = 0.25
-max_trades_per_run = 8
+max_trades_per_day = 6
+max_open_positions = 3
 
-# 🔥 Activity tuning
-profit_level_1 = 0.02
-profit_level_2 = 0.04
-profit_level_3 = 0.08
+take_profit_pct = 0.006   # +0.6%
+stop_loss_pct = -0.004    # -0.4%
 
-stop_loss_pct = -0.08
-crash_protection_pct = -0.04
+force_exit_hour = 15
+force_exit_minute = 45
+
+
+def now_ny():
+    return datetime.now(ny)
 
 
 def is_market_open():
     return api.get_clock().is_open
 
 
-def get_portfolio():
-    positions = api.list_positions()
-    portfolio = {}
-    total_positions_value = 0
-
-    for p in positions:
-        symbol = p.symbol
-        value = float(p.market_value)
-        portfolio[symbol] = value
-        total_positions_value += value
-
+def get_account():
     account = api.get_account()
-    cash = float(account.cash)
-    total_value = total_positions_value + cash
-
-    return portfolio, total_value, cash, positions
+    return float(account.cash), float(account.equity)
 
 
-def get_current_allocation(portfolio, total_value, symbol):
-    if total_value <= 0:
-        return 0
-    return portfolio.get(symbol, 0) / total_value
-
-
-def get_market_condition():
+def get_position(symbol):
     try:
-        bars = api.get_bars("VTI", TimeFrame.Day, limit=10).df
+        return api.get_position(symbol)
+    except Exception:
+        return None
 
-        if len(bars) < 2:
-            return "neutral"
 
-        latest = bars.iloc[-1]
-        previous = bars.iloc[-2]
+def get_open_positions_count():
+    count = 0
+    for symbol in symbols:
+        if get_position(symbol):
+            count += 1
+    return count
 
-        change_pct = (latest["close"] - previous["close"]) / previous["close"]
 
-        if change_pct <= crash_protection_pct:
-            return "crash"
-        elif change_pct <= -0.02:
-            return "dip"
-        elif change_pct >= 0.02:
-            return "strong"
-        else:
-            return "neutral"
+def todays_trade_count():
+    try:
+        start = now_ny().replace(hour=0, minute=0, second=0, microsecond=0)
+        activities = api.get_activities(
+            activity_types="FILL",
+            after=start.isoformat()
+        )
+        return len(activities)
+    except Exception as e:
+        print("Could not count trades:", e)
+        return 0
+
+
+def get_signal(symbol):
+    try:
+        bars = api.get_bars(symbol, TimeFrame.Minute, limit=30).df
+
+        if len(bars) < 20:
+            return "hold"
+
+        close = bars["close"]
+        last = close.iloc[-1]
+        ma5 = close.tail(5).mean()
+        ma20 = close.tail(20).mean()
+
+        previous = close.iloc[-2]
+        change_pct = (last - previous) / previous
+
+        if last > ma5 > ma20 and change_pct > 0:
+            return "buy"
+
+        return "hold"
 
     except Exception as e:
-        print("Market check failed:", e)
-        return "neutral"
+        print(f"Signal failed for {symbol}: {e}")
+        return "hold"
 
 
-def submit_buy(symbol, dollar_amount):
-    if dollar_amount < min_order_size:
+def submit_buy(symbol, amount):
+    if amount < min_order_size:
         return False
 
-    print(f"EXECUTED BUY: {symbol} ${round(dollar_amount, 2)}")
+    print(f"BUY {symbol} ${round(amount, 2)}")
 
     try:
         api.submit_order(
             symbol=symbol,
-            notional=round(dollar_amount, 2),
+            notional=round(amount, 2),
             side="buy",
             type="market",
             time_in_force="day"
@@ -115,7 +120,7 @@ def submit_sell(symbol, qty):
     if qty <= 0:
         return False
 
-    print(f"EXECUTED SELL: {symbol} qty {qty}")
+    print(f"SELL {symbol} qty {qty}")
 
     try:
         api.submit_order(
@@ -131,141 +136,94 @@ def submit_sell(symbol, qty):
         return False
 
 
-def check_profit_take_and_stop_loss(positions):
-    trades = 0
+def manage_positions():
+    current_time = now_ny()
 
-    for p in positions:
-        if trades >= max_trades_per_run:
-            break
-
-        symbol = p.symbol
-        avg_entry_price = float(p.avg_entry_price)
-        current_price = float(p.current_price)
-        qty = float(p.qty)
-
-        if avg_entry_price <= 0:
-            continue
-
-        gain_pct = (current_price - avg_entry_price) / avg_entry_price
-
-        # Stop loss
-        if gain_pct <= stop_loss_pct:
-            qty_to_sell = qty * 0.50
-            print(f"{symbol} STOP LOSS {round(gain_pct * 100, 2)}%")
-
-            if submit_sell(symbol, qty_to_sell):
-                trades += 1
-            continue
-
-        # Profit taking
-        if gain_pct >= profit_level_3:
-            sell_pct = 0.60
-        elif gain_pct >= profit_level_2:
-            sell_pct = 0.40
-        elif gain_pct >= profit_level_1:
-            sell_pct = 0.20
-        else:
-            continue
-
-        qty_to_sell = qty * sell_pct
-        print(f"{symbol} PROFIT {round(gain_pct * 100, 2)}%")
-
-        if submit_sell(symbol, qty_to_sell):
-            trades += 1
-
-
-def buy_underweight_assets():
-    portfolio, total_value, cash, positions = get_portfolio()
-
-    required_cash_reserve = total_value * cash_reserve_pct
-    investable_cash = cash - required_cash_reserve
-
-    if investable_cash < min_order_size:
-        print("Not enough cash.")
-        return
-
-    market_condition = get_market_condition()
-    print("Market condition:", market_condition)
-
-    underweight_assets = []
-
-    for symbol, target_pct in targets.items():
-        current_pct = get_current_allocation(portfolio, total_value, symbol)
-
-        if current_pct >= target_pct:
-            continue
-
-        if current_pct >= max_single_asset_pct:
-            continue
-
-        # Market behavior
-        if market_condition == "crash":
-            if symbol != "SGOV":
-                continue
-
-        elif market_condition == "dip":
-            if symbol not in ["JEPI", "SCHD", "SGOV", "SPY", "QQQ"]:
-                continue
-
-        elif market_condition == "strong":
-            if symbol == "SPY":
-                continue
-
-        gap = target_pct - current_pct
-        underweight_assets.append((symbol, gap))
-
-    if not underweight_assets:
-        print("Nothing to buy.")
-        return
-
-    # 🔥 Priority system
-    priority_order = [
-        "JEPI",
-        "JEPQ",
-        "SCHD",
-        "O",
-        "SGOV",
-        "SPY",
-        "QQQ",
-        "XYLD",
-        "QYLD",
-        "VTI"
-    ]
-
-    underweight_assets.sort(
-        key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 999
+    force_exit = (
+        current_time.hour > force_exit_hour or
+        (current_time.hour == force_exit_hour and current_time.minute >= force_exit_minute)
     )
 
-    total_gap = sum(gap for _, gap in underweight_assets)
-    trades = 0
+    for symbol in symbols:
+        position = get_position(symbol)
 
-    for symbol, gap in underweight_assets:
-        if trades >= max_trades_per_run:
+        if not position:
+            continue
+
+        qty = float(position.qty)
+        avg_entry = float(position.avg_entry_price)
+        current_price = float(position.current_price)
+
+        if avg_entry <= 0:
+            continue
+
+        gain_pct = (current_price - avg_entry) / avg_entry
+
+        if gain_pct >= take_profit_pct:
+            print(f"{symbol} profit target hit: {round(gain_pct * 100, 2)}%")
+            submit_sell(symbol, qty)
+
+        elif gain_pct <= stop_loss_pct:
+            print(f"{symbol} stop loss hit: {round(gain_pct * 100, 2)}%")
+            submit_sell(symbol, qty)
+
+        elif force_exit:
+            print(f"{symbol} force exit before close")
+            submit_sell(symbol, qty)
+
+
+def open_new_trades():
+    trades_today = todays_trade_count()
+
+    if trades_today >= max_trades_per_day:
+        print("Max daily trades reached.")
+        return
+
+    if get_open_positions_count() >= max_open_positions:
+        print("Max open positions reached.")
+        return
+
+    cash, equity = get_account()
+    reserve_cash = equity * cash_reserve_pct
+    investable_cash = cash - reserve_cash
+
+    if investable_cash < min_order_size:
+        print("Not enough investable cash.")
+        return
+
+    for symbol in symbols:
+        if todays_trade_count() >= max_trades_per_day:
             break
 
-        buy_amount = investable_cash * (gap / total_gap)
+        if get_open_positions_count() >= max_open_positions:
+            break
 
-        if submit_buy(symbol, buy_amount):
-            trades += 1
+        if get_position(symbol):
+            continue
+
+        signal = get_signal(symbol)
+        print(f"{symbol} signal: {signal}")
+
+        if signal == "buy":
+            amount = equity * max_position_pct
+            amount = min(amount, investable_cash)
+
+            submit_buy(symbol, amount)
 
 
 def run_bot():
-    print("----- STOCK BOT RUN START -----")
+    print("----- STOCK DAY TRADING BOT START -----")
 
-    market_open = is_market_open()
-
-    if not market_open:
-        print("Stock market is closed. No trades placed.")
+    if not is_market_open():
+        print("Market closed. No trades.")
         return
 
-    portfolio, total_value, cash, positions = get_portfolio()
+    print(f"Time NY: {now_ny()}")
 
-    print(f"Portfolio: ${round(total_value, 2)} | Cash: ${round(cash, 2)}")
+    manage_positions()
+    open_new_trades()
 
-    check_profit_take_and_stop_loss(positions)
-    buy_underweight_assets()
-
-    print("----- STOCK BOT RUN END -----")
+    print("----- STOCK DAY TRADING BOT END -----")
 
 
 if __name__ == "__main__":
