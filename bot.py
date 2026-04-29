@@ -10,7 +10,10 @@ BASE_URL = "https://api.alpaca.markets"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
-symbols = ["JEPI", "JEPQ", "SCHD", "O", "SGOV", "SPY", "QQQ", "VTI", "XYLD", "QYLD"]
+symbols = [
+    "JEPI", "JEPQ", "SCHD", "O", "SGOV",
+    "SPY", "QQQ", "VTI", "XYLD", "QYLD"
+]
 
 ny = pytz.timezone("America/New_York")
 
@@ -37,20 +40,16 @@ def log(msg):
     print(f"[{now_ny()}] {msg}")
 
 
-def is_market_open():
-    return api.get_clock().is_open
+def get_session():
+    now = now_ny().time()
 
-
-def session_type():
-    t = now_ny().time()
-
-    if datetime.strptime("04:00", "%H:%M").time() <= t < datetime.strptime("09:30", "%H:%M").time():
+    if datetime.strptime("04:00", "%H:%M").time() <= now < datetime.strptime("09:30", "%H:%M").time():
         return "pre_market"
 
-    if datetime.strptime("09:30", "%H:%M").time() <= t <= datetime.strptime("16:00", "%H:%M").time():
+    if datetime.strptime("09:30", "%H:%M").time() <= now < datetime.strptime("16:00", "%H:%M").time():
         return "regular"
 
-    if datetime.strptime("16:00", "%H:%M").time() < t <= datetime.strptime("20:00", "%H:%M").time():
+    if datetime.strptime("16:00", "%H:%M").time() <= now <= datetime.strptime("20:00", "%H:%M").time():
         return "after_hours"
 
     return "closed"
@@ -94,6 +93,7 @@ def market_regime():
             return "bullish"
         elif price < ma20 < ma50:
             return "bearish"
+
         return "neutral"
 
     except Exception as e:
@@ -104,10 +104,15 @@ def market_regime():
 def market_volatility_ok():
     try:
         bars = api.get_bars("SPY", TimeFrame.Minute, limit=30).df
+
+        if len(bars) < 10:
+            return False
+
         close = bars["close"]
         change = abs(close.iloc[-1] - close.iloc[0]) / close.iloc[0]
 
         log(f"SPY short volatility: {round(change * 100, 2)}%")
+
         return change <= volatility_limit
 
     except Exception as e:
@@ -118,8 +123,10 @@ def market_volatility_ok():
 def candidate_symbols(regime):
     if regime == "bearish":
         return ["SGOV", "SCHD", "JEPI", "O"]
-    elif regime == "bullish":
+
+    if regime == "bullish":
         return ["QQQ", "SPY", "VTI", "JEPQ", "SCHD", "JEPI"]
+
     return ["SPY", "QQQ", "SCHD", "JEPI", "SGOV"]
 
 
@@ -176,17 +183,44 @@ def submit_buy(symbol, amount):
     if amount < min_order_size:
         return False
 
-    log(f"BUY {symbol} ${round(amount, 2)}")
+    session = get_session()
 
     try:
-        api.submit_order(
-            symbol=symbol,
-            notional=round(amount, 2),
-            side="buy",
-            type="market",
-            time_in_force="day"
-        )
+        trade = api.get_latest_trade(symbol)
+        last_price = float(trade.price)
+
+        if session in ["pre_market", "after_hours"]:
+            limit_price = round(last_price * 1.002, 2)
+
+            log(f"EXTENDED BUY {symbol} ${round(amount, 2)} limit {limit_price}")
+
+            api.submit_order(
+                symbol=symbol,
+                notional=round(amount, 2),
+                side="buy",
+                type="limit",
+                limit_price=limit_price,
+                time_in_force="day",
+                extended_hours=True
+            )
+
+        elif session == "regular":
+            log(f"REGULAR BUY {symbol} ${round(amount, 2)}")
+
+            api.submit_order(
+                symbol=symbol,
+                notional=round(amount, 2),
+                side="buy",
+                type="market",
+                time_in_force="day"
+            )
+
+        else:
+            log("Market closed. No buy.")
+            return False
+
         return True
+
     except Exception as e:
         log(f"Buy failed for {symbol}: {e}")
         return False
@@ -196,17 +230,44 @@ def submit_sell(symbol, qty):
     if qty <= 0:
         return False
 
-    log(f"SELL {symbol} qty {qty}")
+    session = get_session()
 
     try:
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side="sell",
-            type="market",
-            time_in_force="day"
-        )
+        trade = api.get_latest_trade(symbol)
+        last_price = float(trade.price)
+
+        if session in ["pre_market", "after_hours"]:
+            limit_price = round(last_price * 0.998, 2)
+
+            log(f"EXTENDED SELL {symbol} qty {qty} limit {limit_price}")
+
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="limit",
+                limit_price=limit_price,
+                time_in_force="day",
+                extended_hours=True
+            )
+
+        elif session == "regular":
+            log(f"REGULAR SELL {symbol} qty {qty}")
+
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="day"
+            )
+
+        else:
+            log("Market closed. No sell.")
+            return False
+
         return True
+
     except Exception as e:
         log(f"Sell failed for {symbol}: {e}")
         return False
@@ -253,6 +314,7 @@ def open_new_trades(regime):
 
     if last_equity > 0:
         daily_change = (equity - last_equity) / last_equity
+
         if daily_change <= daily_loss_limit_pct:
             log("Daily loss limit hit. No new trades.")
             return
@@ -268,6 +330,7 @@ def open_new_trades(regime):
         return
 
     candidates = candidate_symbols(regime)
+
     ranked = []
 
     for symbol in candidates:
@@ -306,63 +369,36 @@ def open_new_trades(regime):
             investable_cash -= amount
 
 
-def scan_only(regime):
-    log("SCAN MODE ONLY — no orders will be placed.")
-
-    candidates = candidate_symbols(regime)
-
-    ranked = []
-
-    for symbol in candidates:
-        score = score_symbol(symbol)
-        ranked.append((symbol, score))
-        log(f"SCAN {symbol}: score {score}")
-
-    ranked.sort(key=lambda x: x[1], reverse=True)
-
-    if ranked:
-        log(f"Top scan candidate: {ranked[0][0]} score {ranked[0][1]}")
-
-
 def run_bot():
-    log("----- STEP 6 DUAL MODE BOT START -----")
+    log("----- EXTENDED HOURS BOT START -----")
 
-    session = session_type()
+    session = get_session()
     log(f"Session: {session}")
 
     if session == "closed":
-        log("Market fully closed. No action.")
+        log("Market fully closed. No trades.")
         return
 
     regime = market_regime()
     log(f"Market regime: {regime}")
 
-    if session in ["pre_market", "after_hours"]:
-        scan_only(regime)
-        return
+    if session == "regular":
+        if not market_volatility_ok():
+            log("Volatility too high. Defensive pause.")
+            return
 
-    if not is_market_open():
-        log("Market not officially open. No trades.")
-        return
+        manage_positions(regime)
+        open_new_trades(regime)
 
-    current_time = now_ny().time()
+    elif session in ["pre_market", "after_hours"]:
+        log("Extended-hours mode active.")
 
-    if current_time < datetime.strptime("10:00", "%H:%M").time():
-        log("Too early after open. Waiting.")
-        return
+        # Safer extended-hours behavior:
+        # Manage exits, but only open new trades if score is strong.
+        manage_positions(regime)
+        open_new_trades(regime)
 
-    if current_time > datetime.strptime("15:30", "%H:%M").time():
-        log("Too close to close. No new trades.")
-        return
-
-    if not market_volatility_ok():
-        log("Volatility too high. Defensive pause.")
-        return
-
-    manage_positions(regime)
-    open_new_trades(regime)
-
-    log("----- STEP 6 DUAL MODE BOT END -----")
+    log("----- EXTENDED HOURS BOT END -----")
 
 
 if __name__ == "__main__":
