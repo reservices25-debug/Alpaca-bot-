@@ -12,7 +12,34 @@ BASE_URL = "https://api.alpaca.markets"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
-symbols = ["JEPI", "JEPQ", "SCHD", "O", "SGOV", "SPY", "QQQ", "VTI", "XYLD", "QYLD"]
+symbols = [
+    # Core ETFs
+    "SPY", "QQQ", "VTI", "VOO", "DIA", "IWM",
+
+    # Dividend / income ETFs
+    "JEPI", "JEPQ", "SCHD", "VYM", "SPHD", "XYLD", "QYLD",
+
+    # Safety / cash-like
+    "SGOV", "BIL", "SHV",
+
+    # REIT / income stocks
+    "O", "STAG", "MAIN", "PSEC",
+
+    # Large-cap growth
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+
+    # Financials
+    "JPM", "BAC", "V", "MA",
+
+    # Defensive / dividend stocks
+    "KO", "PEP", "PG", "JNJ", "WMT", "T",
+
+    # Energy
+    "XOM", "CVX",
+
+    # Sector ETFs
+    "XLK", "XLF", "XLE", "XLV", "XLP", "XLY"
+]
 
 ny = pytz.timezone("America/New_York")
 
@@ -34,9 +61,9 @@ take_profit_pct = 0.012
 stop_loss_pct = -0.006
 daily_loss_limit_pct = -0.02
 
-min_entry_score = 5
-min_hold_score = 3
-volatility_limit = 0.018
+min_entry_score = 4
+min_hold_score = 2
+volatility_limit = 0.025
 
 
 def now_ny():
@@ -225,10 +252,25 @@ def market_volatility_ok():
 
 def candidate_symbols(regime):
     if regime == "bearish":
-        return ["SGOV", "SCHD", "JEPI", "O"]
+        return [
+            "SGOV", "BIL", "SHV",
+            "SCHD", "VYM", "JEPI", "JEPQ",
+            "O", "KO", "PEP", "PG", "JNJ", "WMT"
+        ]
+
     if regime == "bullish":
-        return ["QQQ", "SPY", "VTI", "JEPQ", "SCHD", "JEPI"]
-    return ["SPY", "QQQ", "SCHD", "JEPI", "SGOV"]
+        return [
+            "QQQ", "SPY", "VTI", "VOO", "IWM",
+            "NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "META", "TSLA",
+            "XLK", "XLY", "JEPQ", "SCHD"
+        ]
+
+    return [
+        "SPY", "QQQ", "VTI", "VOO",
+        "SCHD", "JEPI", "JEPQ",
+        "O", "KO", "PEP", "PG",
+        "XLK", "XLF", "XLV"
+    ]
 
 
 def score_trend(symbol):
@@ -362,7 +404,14 @@ def submit_buy(symbol, amount, strategy):
                 extended_hours=True
             )
 
-            log_trade("BUY", symbol, amount=round(amount, 2), price=limit_price, reason="extended_entry", strategy=strategy)
+            log_trade(
+                "BUY",
+                symbol,
+                amount=round(amount, 2),
+                price=limit_price,
+                reason="extended_entry",
+                strategy=strategy
+            )
 
         elif session == "regular":
             log(f"REG BUY {symbol} ${round(amount, 2)}")
@@ -375,7 +424,14 @@ def submit_buy(symbol, amount, strategy):
                 time_in_force="day"
             )
 
-            log_trade("BUY", symbol, amount=round(amount, 2), price=last_price, reason="regular_entry", strategy=strategy)
+            log_trade(
+                "BUY",
+                symbol,
+                amount=round(amount, 2),
+                price=last_price,
+                reason="regular_entry",
+                strategy=strategy
+            )
 
         else:
             log("Closed. No buy.")
@@ -412,7 +468,14 @@ def submit_sell(symbol, qty, reason, strategy):
                 extended_hours=True
             )
 
-            log_trade("SELL", symbol, qty=qty, price=limit_price, reason=reason, strategy=strategy)
+            log_trade(
+                "SELL",
+                symbol,
+                qty=qty,
+                price=limit_price,
+                reason=reason,
+                strategy=strategy
+            )
 
         elif session == "regular":
             log(f"REG SELL {symbol} qty {qty}")
@@ -425,7 +488,14 @@ def submit_sell(symbol, qty, reason, strategy):
                 time_in_force="day"
             )
 
-            log_trade("SELL", symbol, qty=qty, price=last_price, reason=reason, strategy=strategy)
+            log_trade(
+                "SELL",
+                symbol,
+                qty=qty,
+                price=last_price,
+                reason=reason,
+                strategy=strategy
+            )
 
         else:
             log("Closed. No sell.")
@@ -541,7 +611,7 @@ def open_new_trades(regime, strategy):
 
 
 def run_bot():
-    log("----- STEP 11 MULTI-STRATEGY BOT START -----")
+    log("----- STEP 11 LARGE-UNIVERSE BOT START -----")
 
     session = get_session()
     log(f"Session: {session}")
@@ -574,7 +644,7 @@ def run_bot():
     save_risk_report(session, regime)
     save_performance_report()
 
-    log("----- STEP 11 MULTI-STRATEGY BOT END -----")
+    log("----- STEP 11 LARGE-UNIVERSE BOT END -----")
 
 
 if __name__ == "__main__":
